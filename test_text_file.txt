@@ -1,0 +1,249 @@
+package net.juniper.hcm;
+
+import java.io.IOException;
+import java.util.Hashtable;
+
+import javax.naming.Context;
+import javax.naming.NamingEnumeration;
+import javax.naming.NamingException;
+import javax.naming.directory.Attribute;
+import javax.naming.directory.Attributes;
+import javax.naming.directory.SearchControls;
+import javax.naming.directory.SearchResult;
+import javax.naming.ldap.Control;
+import javax.naming.ldap.HasControls;
+import javax.naming.ldap.InitialLdapContext;
+import javax.naming.ldap.LdapContext;
+import javax.naming.ldap.PagedResultsControl;
+import javax.naming.ldap.PagedResultsResponseControl;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+public class ADSearch {
+
+    private final static int LDAPS_PORT = 636;
+    private final static String DEFAULT_FORMAT = "CSV";
+    private final static String NEW_LINE="\n";
+    private final static String CSV_SEPERATOR="|";
+    
+    public static void main(String[] args) {
+            try {
+                    System.out.println(search("ldap-aws-lb.jnpr.net", "cn=OVD User,ou=users,ou=common,dc=jnpr,dc=net",
+                                    "W@1tand5eeY0uc@nW1nasAlways!!!", "dc=jnpr,dc=net",
+                                    "(&(sAMAccountName=*)(employeeID=0*)(mail=*))",
+                                    "jnpr-superFunction, jnpr-businessUnit, jnpr-departmentBusinessUnit, name, cn, SamAccountName, jnpr-region, employeeType, jnpr-employeeStatus, jnpr-role, jnpr-subrole, EmployeeID","CSV"));
+            } catch (Exception e) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace();
+            }
+            /*
+             * System.out.println(search("ldap-eqx-lb.jnpr.net",
+             * "CN=_psldap,OU=PeopleSoft,OU=Misc,OU=Common,DC=jnpr,DC=net",
+             * "YAVYhZ(#jLivtSgd9qUqo1Iy1kJMzE", "OU=Corp,DC=jnpr,DC=net",
+             * "(&(sAMAccountName=*)(employeeID=0*)(mail=*))", null, false).toString(4));
+             */
+    }
+
+    private enum ALLOWED_FORMATS_E {
+        JSON,
+        CSV,
+        XML;
+
+        public static boolean contains(String s) {
+            for (ALLOWED_FORMATS_E choice : values())
+                if (choice.name().equalsIgnoreCase(s))
+                    return true;
+            return false;
+        }
+    };
+
+
+    private static String getURL(String ldapServer) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("ldaps://");
+
+        sb.append(ldapServer);
+        sb.append(":");
+
+        sb.append(LDAPS_PORT);
+        return sb.toString();
+    }
+
+
+    public static String search(String ldapServer, String ldapUsername, String ldapPassword, String searchbase,
+                                String searchfilter, String attributesString, String outputFormat) throws Exception {
+        String desired_format = DEFAULT_FORMAT;
+
+        if (outputFormat != null && ALLOWED_FORMATS_E.contains(outputFormat)) {
+            desired_format = outputFormat.toUpperCase();
+        }
+        //output for JSON format
+        JSONObject json = new JSONObject();
+        JSONArray empRecords = new JSONArray();
+        json.put("records", empRecords);
+
+        //output for CSV format
+        StringBuilder sb=new StringBuilder();
+        sb.append("cn");
+
+        String servername = getURL(ldapServer);
+
+        String[] attributes = null;
+        int attributesLength=0;
+
+        if (attributesString != null && attributesString.trim().length() > 0) {
+        	attributes = attributesString.split(",");
+        	attributesLength=attributes.length;
+            sb.append(CSV_SEPERATOR);
+            sb.append(attributesString.replace(",", CSV_SEPERATOR));
+        }
+        sb.append(NEW_LINE);
+
+        Hashtable<String, Object> env = new Hashtable<String, Object>();
+        env.put(Context.SECURITY_AUTHENTICATION, "simple");
+        env.put(Context.SECURITY_PRINCIPAL, ldapUsername);
+        env.put(Context.SECURITY_CREDENTIALS, ldapPassword);
+        env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.ldap.LdapCtxFactory");
+        env.put(Context.PROVIDER_URL, servername);
+        env.put("java.naming.ldap.factory.socket", NonVerifyingSSLSocketFactory.class.getName());
+
+
+        // the following is helpful in debugging errors
+        // env.put("com.sun.jndi.ldap.trace.ber", System.err);
+
+        LdapContext ctx = null;
+        try {
+            // Activate paged results
+            int pageSize = 1000; // 1000 entries per page
+            byte[] cookie = null;
+            int total = 0;
+
+            ctx = new InitialLdapContext(env, null);
+
+            NamingEnumeration results = null;
+
+
+            ctx.setRequestControls(new Control[] { new PagedResultsControl(pageSize, Control.CRITICAL) });
+
+            do {
+                SearchControls controls = new SearchControls();
+                controls.setSearchScope(SearchControls.SUBTREE_SCOPE);
+                controls.setDerefLinkFlag(false);
+                controls.setCountLimit(0);
+                if (attributes != null) {
+                    controls.setReturningAttributes(attributes);
+                } else {
+                    controls.setReturningAttributes(new String[0]);
+                }
+                controls.setTimeLimit(0);
+
+                // Perform the search
+                results = ctx.search(searchbase, searchfilter, controls);
+
+                // Iterate over a batch of search results
+                while (results != null && results.hasMore()) {
+                    // Display an entry
+                    SearchResult entry = (SearchResult) results.next();
+
+                    //JSON output
+                    if (desired_format.equals(ALLOWED_FORMATS_E.JSON.toString())) {
+                        JSONObject record = new JSONObject();
+
+                        record.put("cn", entry.getName());
+                        total += 1;
+                        if (attributes != null) {
+                            Attributes attr = entry.getAttributes();
+                            //return only the required attributes
+                            for (String attribute : attributes) {
+                                Attribute s = attr.get(attribute);
+                                record.put(attribute, s != null ? s.get().toString() : JSONObject.NULL);
+
+                            }
+                        }
+
+                        empRecords.put(record);
+                    }
+                    
+                    
+                    //CSV output
+                    if (desired_format.equals(ALLOWED_FORMATS_E.CSV.toString())) {
+                    	sb.append(entry.getName());
+                    	 if (attributes != null) {
+                    		 sb.append(CSV_SEPERATOR);
+                             Attributes attr = entry.getAttributes();
+                             int counter=1;
+                             //return only the required attributes
+                             for (String attribute : attributes) {
+                                 Attribute s = attr.get(attribute);
+                                 sb.append( s != null ? s.get().toString() : null);
+                                 if(counter<attributesLength) {
+                                 sb.append(CSV_SEPERATOR);
+                                 }
+                                 ++counter;
+
+                             }
+                         }
+                    	 sb.append(NEW_LINE);
+                    }
+                    
+                    
+                    //XML output
+                    if (desired_format.equals(ALLOWED_FORMATS_E.XML.toString())) {
+                        
+                        //to be implemented
+                    }
+                    
+                    // Handle the entry's response controls (if any)
+                    if (entry instanceof HasControls) {
+                        // ((HasControls)entry).getControls();
+
+                    }
+                }
+
+                // check for paged results control response
+                Control[] respControls = ctx.getResponseControls();
+                if (respControls != null) {
+                    for (int i = 0; i < respControls.length; i++) {
+                        if (respControls[i] instanceof PagedResultsResponseControl) {
+                            PagedResultsResponseControl prrc = (PagedResultsResponseControl) respControls[i];
+                            cookie = prrc.getCookie();
+                        } else {
+                            // Handle other response controls (if any)
+                        }
+                    }
+                }
+
+                // Re-activate paged results
+                ctx.setRequestControls(new Control[] { new PagedResultsControl(pageSize, cookie, Control.CRITICAL) });
+            } while (cookie != null);
+            json.put("totalRecords", total);
+
+        } catch (NamingException e1) {
+            e1.printStackTrace();
+            throw new Exception(e1.getMessage());
+        } catch (IOException e) {
+            e.printStackTrace();
+            throw new Exception(e.getMessage());
+        } finally {
+            // Close the LDAP association
+            try {
+                if (ctx != null) {
+                    ctx.close();
+                }
+            } catch (NamingException e) {
+                e.printStackTrace();
+            }
+        }
+
+    if (desired_format.equals(ALLOWED_FORMATS_E.JSON.toString())) {
+        return json.toString(1);
+    }
+        if (desired_format.equals(ALLOWED_FORMATS_E.CSV.toString())) {
+            return sb.toString();
+        }
+
+return null;
+    }
+}
